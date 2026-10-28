@@ -1,1 +1,72 @@
+name: Build CheatlessTweaksAllCommands 1.4.8
 
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'CheatlessTweaksAllCommands/**'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Android NDK r28c
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28c
+          add-to-path: false
+
+      - name: Prepare matching LeviLaunchroid preloader library
+        shell: bash
+        env:
+          PRELOADER_SO_BASE64: ${{ secrets.PRELOADER_SO_BASE64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p vendor/preloader
+          if [[ -n "${PRELOADER_SO_BASE64:-}" ]]; then
+            printf '%s' "$PRELOADER_SO_BASE64" | base64 --decode > vendor/preloader/libpreloader.so
+          elif [[ -f vendor/preloader/libpreloader.so ]]; then
+            echo 'Using vendor/preloader/libpreloader.so from repository'
+          else
+            echo 'ERROR: missing matching libpreloader.so.' >&2
+            echo 'Add vendor/preloader/libpreloader.so (only if you are allowed to redistribute it), or configure repository secret PRELOADER_SO_BASE64.' >&2
+            exit 2
+          fi
+          file vendor/preloader/libpreloader.so
+          readelf -h vendor/preloader/libpreloader.so | grep -E 'Class:|Machine:'
+          readelf -h vendor/preloader/libpreloader.so | grep -q 'AArch64' || { echo 'Expected an AArch64 library'; exit 3; }
+
+      - name: Build native library and package .levipack
+        shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          PRELOADER_DIR: ${{ github.workspace }}/vendor/preloader
+        run: |
+          set -euo pipefail
+          cd CheatlessTweaksAllCommands
+          bash build_android.sh
+          OUTPUT_DIR="$GITHUB_WORKSPACE/release" bash package_release.sh
+          test -s "$GITHUB_WORKSPACE/release/libCheatlessTweaksAllCommands_1.4.8.levipack"
+          unzip -l "$GITHUB_WORKSPACE/release/libCheatlessTweaksAllCommands_1.4.8.levipack"
+
+      - name: Upload .levipack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CheatlessTweaksAllCommands-1.4.8-levipack
+          path: release/*.levipack
+          if-no-files-found: error
+          retention-days: 30
